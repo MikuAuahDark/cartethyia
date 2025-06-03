@@ -647,19 +647,22 @@ end
 ---@package
 function parser.parseCommandInvocation(text, lineinfo)
 	local dummy, identifier, err
+	err = nil
 
 	-- Remove preceding space
 	dummy, text = parser.parseSpace(text, lineinfo)
 
 	identifier, text = parser.parseIdentifier(text, lineinfo)
 	if not identifier then
-		---@type Cartethyia.Parser.Error
-		err = {
-			line = lineinfo.line,
-			column = lineinfo.column,
-			message = "expected identifier"
-		}
-		return nil, text
+		if text:sub(1, 1) ~= "#" then
+			---@type Cartethyia.Parser.Error
+			err = {
+				line = lineinfo.line,
+				column = lineinfo.column,
+				message = "expected identifier"
+			}
+		end
+		return nil, text, err
 	end
 
 	local line = lineinfo.line
