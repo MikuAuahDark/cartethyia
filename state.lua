@@ -1,12 +1,76 @@
+local PATH = string.sub(..., 1, string.len(...) - #(".state"))
+
+---@type Cartethyia.Interpolator.M
+local Interpolator = require(PATH..".interpolate")
+
+---@type Cartethyia.Util.M
+local Util = require(PATH..".util")
+
+---@type Cartethyia.Variables.M
+local Variables = require(PATH..".variables")
+
 ---@class Cartethyia.State
 local State = {}
 
 ---@class Cartethyia.State._CMakeFunction
----@field public code any
+---@field public code Cartethyia.Parser.Command[]
+---@field public filename string
+---@field public line integer
 ---@field public argnames string[]
 ---@field public macro boolean
 
----@alias Cartethyia.State._LuaFunction fun(state:Cartethyia.State,args:Cartethyia.Parser.Argument[])
+---@class Cartethyia.State._BlockBlock
+---@field public type "block"
+---@field public propagate string[]|nil if this is nil, variable scope is not performed
+
+---@class Cartethyia.State._IfBlock
+---@field public type "if"
+---@field public success boolean if true and elseif/else encountered, jump straight to endif.
+
+---@class Cartethyia.State._WhileBlock
+---@field public type "while"
+---@field public success boolean if true and elseif/else encountered, jump straight to endif.
+
+---@class Cartethyia.State._FunctionBlock: Cartethyia.State._CMakeFunction
+---@field public type "function"|"macro"
+
+---@class Cartethyia.State._ForBlock
+---@field public type "for"
+---@field public breakloop boolean
+---@field public current integer
+---@field public capture table<string, {value:string|nil}>
+
+---@class Cartethyia.State._ForRangeBlock: Cartethyia.State._ForBlock
+---@field public subtype "range"
+---@field public stop integer
+---@field public step integer
+---@field public destvar string
+
+---@class Cartethyia.State._ForeachBlock: Cartethyia.State._ForBlock
+---@field public subtype "each"
+---@field public items string[]
+---@field public destvar string
+
+---@class Cartethyia.State._ForeachZipBlock: Cartethyia.State._ForBlock
+---@field public subtype "zip"
+---@field public items string[][]
+---@field public destvar string[]
+
+---@alias Cartethyia.State._LuaFunction fun(state:Cartethyia.State,args:string[],isUnquoted:boolean[])
+---@alias Cartethyia.State._ControlBlock
+---| Cartethyia.State._BlockBlock
+---| Cartethyia.State._IfBlock
+---| Cartethyia.State._WhileBlock
+---| Cartethyia.State._ForRangeBlock
+---| Cartethyia.State._ForeachBlock
+---| Cartethyia.State._ForeachZipBlock
+
+---@class Cartethyia.State._ExecStack
+---@field public code Cartethyia.Parser.Command[]
+---@field public pc integer
+---@field public filename string
+---@field public shadowVariables table<string, string> Read-only variables that's included in arg expansion **only**.
+---@field public macro boolean
 
 ---@alias Cartethyia.State._Function Cartethyia.State._LuaFunction|Cartethyia.State._CMakeFunction
 
@@ -27,18 +91,32 @@ local function printStderr(text)
 end
 
 function State:new()
+	-- Note: Functions names casted to uppercase.
 	---@type table<string, Cartethyia.State._Function>
-	self.functions = {
-		BLOCK = State.COMMAND_BLOCK,
-		MESSAGE = State.COMMAND_MESSAGE
-	}
-	self.controlStack = {}
+	self.functions = {}
+	---@type Cartethyia.State._ControlBlock[]
+	self.controlStack = {} -- this stores the control block stack
+	---@type Cartethyia.State._ExecStack[]
+	self.execStack = {} -- this controls the (function) execution stack
 
-	self.printStdout = print
-	self.printStderr = printStderr
+	self.variables = Variables()
+	self.shadowVariables = Variables()
+	self.interpolator = Interpolator(function(name)
+		-- Note: We can't just pass it to self.variables
+		-- because current stack may have shadow variables.
+		if self.shadowVariables:has(name) then
+			return self.shadowVariables:get(name)
+		end
 
+		return self:getVariable(name)
+	end)
+
+	self.currentError = nil
+
+	self:setPrintToStdout(print)
+	self:setPrintToStderr(printStderr)
+	self.variables:set("CARTETHYIA", "1", 1)
 	-- TODO: Finalize setup
-	self:setVariable("CARTETHYIA", "1")
 end
 
 ---@param commands Cartethyia.Parser.Command[]
@@ -51,7 +129,13 @@ function State:execute(commands, filename)
 		return nil, err.." at "..filename..":"..(line or 0)
 	end
 
-	-- TODO: Execute
+	self.execStack[#self.execStack+1] = {
+		code = Util.copyTable(commands, true),
+		pc = 1,
+		filename = filename,
+		shadowVariables = {},
+		macro = false
+	}
 end
 
 ---@param commands Cartethyia.Parser.Command[]
@@ -103,147 +187,283 @@ function State:verify(commands)
 end
 
 function State:step()
-end
-
----@param prefix string
----@param message string
----@param halt boolean?
-function State:message(prefix, message, halt)
-end
-
----@param message string
----@param continue boolean?
-function State:error(message, continue)
-	return self:message("Error", message, not continue)
-end
-
----@param message string
-function State:warning(message)
-	return self:message("Warning", message)
-end
-
----@param func fun(message:string)
-function State:setPrintToStdout(func)
-end
-
----@param name string
----@return string
-function State:getVariable(name, default)
-	-- TODO
-	return default or ""
-end
-
----@param name string
----@param default boolean?
----@return boolean
-function State:getVariableBool(name, default)
-	if not self:hasVariable(name) then
-		return not not default
+	if self.currentError then
+		return nil, self.currentError
 	end
 
-	local value = self:getVariable(name)
-	if
-		value == "" or
-		value == "0" or
-		value == "OFF" or
-		value == "NO" or
-		value == "FALSE" or
-		value == "N" or
-		value == "IGNORE" or
-		value == "NOTFOUND" or
-		value:sub(-9) == "-NOTFOUND"
-	then
-		return false
+	while true do
+		local currentExec = self.execStack[#self.execStack]
+		if not currentExec then
+			return false
+		end
+
+		-- Get current command at current PC
+		local currentPC = currentExec.pc
+		local command = currentExec.code[currentPC]
+		if command then
+			-- Execute command
+			local func = self.functions[command.name:upper()]
+			local args, isUnquoted = self:expandArguments(command.arguments)
+
+			if type(func) == "function" then
+				-- Lua function
+				func(self, args, isUnquoted)
+
+				if self.currentError then
+					return nil, self.currentError
+				end
+
+				if currentExec.pc == currentPC then
+					-- Function does not alter the PC. Increment PC by 1
+					currentExec.pc = currentPC + 1
+				end
+			else
+				-- CMake function.
+				if #args < #func.argnames then
+					self:fatalError("Function invoked with incorrect arguments for function named: "..command.name)
+					return nil, self.currentError
+				end
+
+				local shadowvar = {}
+				local argn = {}
+				Util.tableMove(args, #func.argnames, #args, 1, argn)
+				local varstore = func.macro and self.shadowVariables or self.variables
+				if func.macro then
+					-- Populate shadow variables
+					shadowvar["ARGC"] = tostring(#args)
+
+					for i, arg in ipairs(args) do
+						local argname = func.argnames[i]
+						if argname then
+							shadowvar[argname] = arg
+						end
+
+						shadowvar["ARG"..(i - 1)] = arg
+					end
+
+					shadowvar["ARGN"] = table.concat(argn, ";")
+				else
+					-- Push variable stack.
+					self.variables:beginScope()
+
+					-- Populate true variables
+					self.variables:set("ARGC", tostring(#args))
+
+					for i, arg in ipairs(args) do
+						local argname = func.argnames[i]
+						if argname then
+							self.variables:set(argname, arg)
+						end
+
+						self.variables:set("ARG"..(i - 1), arg)
+					end
+
+					self.variables:set("ARGN", table.concat(argn, ";"))
+				end
+
+				-- Create new function call stack
+				self.execStack[#self.execStack+1] = {
+					code = func.code,
+					pc = 1,
+					filename = func.filename,
+					shadowVariables = shadowvar,
+					macro = func.macro
+				}
+			end
+
+			-- Break out of while loop
+			break
+		end
+	end
+end
+
+function State:run()
+	while true do
+		local res, err = self:step()
+
+		if res == nil then
+			return nil, err
+		elseif res == false then
+			break
+		end
 	end
 
 	return true
 end
 
----@param name string
----@return boolean
-function State:hasVariable(name)
-	-- TODO
+---Most recent call first
+---@return [string, integer][]
+function State:traceback()
+	local result = {}
+
+	for i = #self.execStack, 1, -1 do
+		local execInfo = self.execStack[i]
+		local code = execInfo.code[execInfo.pc]
+
+		if code then
+			result[#result+1] = {execInfo.filename, code.line}
+		end
+	end
+
+	return result
 end
+
+---@param message string
+function State:messageStdout(message)
+	return self.printStdout(message)
+end
+
+---@param message string
+function State:messageStderr(message)
+	return self.printStderr(message)
+end
+
+---@param message string
+function State:sendError(message)
+	return self.printStderr("Error: "..message)
+end
+
+---@param message string
+function State:fatalError(message)
+	self:sendError(message)
+	self.currentError = message
+end
+
+---@param message string
+---@param continue boolean?
+function State:error(message, continue)
+	if continue then
+		return self:sendError(message)
+	else
+		return self:fatalError(message)
+	end
+end
+
+---@param message string
+function State:warning(message)
+	return self.printStderr("Warning: "..message)
+end
+
+---@param message string
+function State:warningDev(message)
+	return self.printStderr("Warning (Dev): "..message)
+end
+
+---@param message string
+function State:deprecated(message)
+	if self:getVariableBool("CMAKE_ERROR_DEPRECATED") then
+		self.printStderr("Deprecation Error: "..message)
+		self.currentError = message
+	elseif self:getVariableBool("CMAKE_WARN_DEPRECATED", true) then
+		self.printStderr("Deprecation Warning: "..message)
+	end
+end
+
+---@param func fun(message:string)
+function State:setPrintToStdout(func)
+	self.printStdout = func
+end
+
+---@param func fun(message:string)
+function State:setPrintToStderr(func)
+	self.printStderr = func
+end
+
+---@param name string
+---@param default string?
+---@return string
+function State:getVariable(name, default)
+	if not self.variables:has(name) then
+		return default or ""
+	end
+
+	return self.variables:get(name)
+end
+
+---@param name string
+---@param default boolean?
+function State:getVariableBoolStrict(name, default)
+	if not self:hasVariable(name) then
+		return not not default
+	end
+
+	local value = self:getVariable(name)
+	return Util.evaluateBoolStrict(value)
+end
+
+---@param name string
+---@param default boolean?
+function State:getVariableBool(name, default)
+	local r = self:getVariableBoolStrict(name, default)
+	if r == nil then
+		return true
+	end
+
+	return r
+end
+
+---@param name string
+---@param parentScope boolean?
+---@return boolean
+function State:hasVariable(name, parentScope)
+	return self.variables:has(name, parentScope and -1 or 0)
+end
+
+---@param name string
+---@param value boolean|number|string
+---@param parentScope boolean?
+function State:setVariable(name, value, parentScope)
+	return self.variables:set(name, tostring(value), parentScope and -1 or 0)
+end
+
+---@param name string
+---@param parentScope boolean?
+function State:unsetVariable(name, parentScope)
+	return self.variables:unset(name, parentScope and -1 or 0)
+end
+
+-- Internal functions --
 
 ---@param uargs Cartethyia.Parser.Argument[]
----@return string[]
+---@return string[], boolean[]
 function State:expandArguments(uargs)
-	return {}
-end
+	local result = {}
+	local unquoted = {}
 
-
---- Built-in commands ---
-
----This defines the CMake `block()` command.
----@param args string[]
-function State:COMMAND_BLOCK(args)
-	local variableScope = true
-	local propagate = false
-
-	if args[1] == "SCOPE_FOR" then
-		table.remove(args, 1)
-		variableScope = false
-
-		while true do
-			if args[1] == "VARIABLES" then
-				table.remove(args, 1)
-				variableScope = true
-			elseif args[1] == "POLICIES" then
-				table.remove(args, 1)
-				self:warning("Cartethyia does not support 'POLICIES' scope and will be ignored")
-			else
-				break
+	for _, arg in ipairs(uargs) do
+		if arg.type == "bracket" then
+			-- Pass as-is
+			result[#result+1] = arg.argument
+			unquoted[#unquoted+1] = false
+		elseif arg.type == "quoted" then
+			-- Perform variable expansion
+			result[#result+1] = self.interpolator:interpolate(arg.argument)
+			unquoted[#unquoted+1] = false
+		elseif arg.type == "unquoted" then
+			-- Perform variable expansion
+			local expanded = self.interpolator:interpolate(arg.argument)
+			for _, value in ipairs(Util.splitArgs(expanded)) do
+				result[#result+1] = value
+				unquoted[#unquoted+1] = true
 			end
 		end
 	end
 
-	if args[1] == "PROPAGATE" then
-		table.remove(args, 1)
-		propagate = true
-	end
-
-	-- TODO: Send "block" command info to control stack
+	return result, unquoted
 end
 
----This defines the CMake `message()` command.
----@param args string[]
-function State:COMMAND_MESSAGE(args)
-	if #args < 1 then
-		self:error("message() called with incorrect number of arguments")
-		return
-	end
+---@param cblock Cartethyia.State._ControlBlock
+function State:insertControlBlock(cblock)
+	self.controlStack[#self.controlStack+1] = cblock
+end
 
-	local cmd = args[1]
-	if cmd == "FATAL_ERROR" then
-		self:error(table.concat(args, "", 2))
-	elseif cmd == "SEND_ERROR" then
-		self:error(table.concat(args, "", 2), true)
-	elseif cmd == "WARNING" then
-		self:warning(table.concat(args, "", 2))
-	elseif cmd == "AUTHOR_WARNING" then
-		self:message("Warning (dev)", table.concat(args, "", 2))
-	elseif cmd == "DEPRECATION" then
-		if self:getVariableBool("CMAKE_ERROR_DEPRECATED") then
-			self:message("Deprecation Error", table.concat(args, "", 2), true)
-		elseif self:getVariableBool("CMAKE_WARN_DEPRECATED", true) then
-			self:message("Deprecation Warning", table.concat(args, "", 2))
-		end
-	elseif cmd == "NOTICE" then
-		self.printStderr(table.concat(args, "", 2))
-	elseif cmd == "STATUS" then
-		self.printStdout("-- "..table.concat(args, "", 2))
-	elseif cmd == "VERBOSE" then
-		-- TODO: Log level
-		self.printStdout("-- "..table.concat(args, "", 2))
-	elseif cmd == "DEBUG" then
-		-- TODO: Log level
-		self.printStdout("-- "..table.concat(args, "", 2))
-	elseif cmd == "TRACE" then
-		-- TODO: Log level
-		self.printStdout("-- "..table.concat(args, "", 2))
-	else
-		self.printStderr(table.concat(args))
-	end
+---@return Cartethyia.State._ControlBlock|nil
+function State:getCurrentControlBlock()
+	return self.controlStack[#self.controlStack]
+end
+
+function State:getCurrentExecInfo()
+	return (assert(self.execStack[#self.execStack], "execution stack is empty"))
 end
 
 return State
