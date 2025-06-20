@@ -8,9 +8,9 @@ local Util = require(PATH..".util")
 local ControlCommands = {}
 
 ---This defines the CMake `block()` command.
----@param self Cartethyia.State
+---@param state Cartethyia.State
 ---@param args string[]
-function ControlCommands.BLOCK(self, args)
+function ControlCommands.BLOCK(state, args)
 	local variableScope = true
 	local propagate = false
 
@@ -24,7 +24,7 @@ function ControlCommands.BLOCK(self, args)
 				variableScope = true
 			elseif args[1] == "POLICIES" then
 				table.remove(args, 1)
-				self:warning("Cartethyia does not support 'POLICIES' scope and will be ignored")
+				state:warning("Cartethyia does not support 'POLICIES' scope and will be ignored")
 			else
 				break
 			end
@@ -36,11 +36,18 @@ function ControlCommands.BLOCK(self, args)
 		propagate = true
 	end
 
+	local execInfo, execPos = state:getCurrentExecInfo()
 	-- Send "block" command info to control stack
+	---@type Cartethyia.State._BlockBlock
 	local result = {
-		type = "block"
+		type = "block",
+		execIndex = execPos,
+		position = execInfo.pc,
+		propagate = nil
 	}
 	if variableScope then
+		state:getVariableStore():beginScope()
+
 		if propagate then
 			result.propagate = args
 		else
@@ -48,22 +55,20 @@ function ControlCommands.BLOCK(self, args)
 		end
 	end
 
-	self.controlStack[#self.controlStack+1] = result
+	state:insertControlBlock(result)
 end
 
----@param self Cartethyia.State
----@param args string[]
-function ControlCommands.ENDBLOCK(self, args)
-	local block = self.controlStack[#self.controlStack]
+---@param state Cartethyia.State
+function ControlCommands.ENDBLOCK(state)
+	local block = state.controlStack[#state.controlStack]
 	assert(block and block.type == "block")
 
 	if block.propagate then
-		for _, var in ipairs(block.propagate) do
-			-- TODO: Propagate variable changes
-		end
+		local varstore = state:getVariableStore()
+		varstore:endScope(block.propagate)
 	end
 
-	table.remove(self.controlStack)
+	state:popLastControlStack()
 end
 
 local _evaluateIf
@@ -286,13 +291,18 @@ function ControlCommands.IF(state, args)
 	local eval = _evaluateIf(state, args)
 	-- TODO: Check if there's error
 
+	local execInfo, execPos = state:getCurrentExecInfo()
 	state.controlStack[#state.controlStack+1] = {
 		type = "if",
+		execIndex = execPos,
+		position = execInfo.pc,
 		success = eval
 	}
 
 	if not eval then
-		-- TODO: Jump to next elseif(), else(), or endif()
+		-- Jump to elseif/else/endif
+		local ifcmd = execInfo.code[execInfo.pc]
+		execInfo.pc = ifcmd.data[2] or ifcmd.data[1]
 	end
 end
 
@@ -302,8 +312,12 @@ function ControlCommands.ELSEIF(state, args)
 	local ifcontrol = state.controlStack[#state.controlStack]
 	assert(ifcontrol and ifcontrol.type == "if")
 
+	local execInfo = state:getCurrentExecInfo()
+	local elseifcmd = execInfo.code[execInfo.pc]
+
 	if ifcontrol.success then
-		-- TODO: Jump to endif()
+		-- Jump to endif()
+		execInfo.pc = elseifcmd.data[1]
 	else
 		local eval = _evaluateIf(state, args)
 		-- TODO: Check if there's error
@@ -311,7 +325,8 @@ function ControlCommands.ELSEIF(state, args)
 		ifcontrol.success = eval
 
 		if not eval then
-			-- TODO: Jump to next elseif(), else(), or endif()
+			-- Jump to elseif/else/endif
+			execInfo.pc = elseifcmd.data[2] or elseifcmd.data[1]
 		end
 	end
 end
@@ -320,9 +335,13 @@ end
 function ControlCommands.ELSE(state)
 	local ifcontrol = state.controlStack[#state.controlStack]
 	assert(ifcontrol and ifcontrol.type == "if")
-	-- Do nothing
+
+	local execInfo = state:getCurrentExecInfo()
+	local elsecmd = execInfo.code[execInfo.pc]
+
 	if ifcontrol.success then
-		-- TODO: Jump to endif()
+		-- Jump to endif()
+		execInfo.pc = elsecmd.data[1]
 	end
 end
 
@@ -331,7 +350,7 @@ function ControlCommands.ENDIF(state)
 	local ifcontrol = state.controlStack[#state.controlStack]
 	assert(ifcontrol.type == "if")
 
-	table.remove(state.controlStack)
+	state:popLastControlStack()
 end
 
 ---@param state Cartethyia.State
@@ -340,30 +359,101 @@ function ControlCommands.WHILE(state, args)
 	local eval = _evaluateIf(state, args)
 	-- TODO: Check if there's error
 
-	state.controlStack[#state.controlStack+1] = {
-		type = "while",
-		success = eval
-	}
+	local execInfo, execPos = state:getCurrentExecInfo()
+	local currentControl = state:getCurrentControlBlock()
+	if
+		currentControl and
+		currentControl.type == "while" and
+		currentControl.execIndex == execPos and
+		currentControl.position == execInfo.pc
+	then
+		-- Looping back from endwhile
+		currentControl.success = eval
+	else
+		-- New while loop
+		state.controlStack[#state.controlStack+1] = {
+			type = "while",
+			success = eval,
+			execIndex = execPos,
+			position = execInfo.pc
+		}
+	end
 
 	if not eval then
-		-- TODO: Jump straight to endwhile()
+		-- Jump straight to endwhile()
+		local whileinfo = execInfo.code[execInfo.pc]
+		execInfo.pc = assert(whileinfo.data[1])
 	end
 end
 
 ---@param state Cartethyia.State
 function ControlCommands.ENDWHILE(state)
-	local whileblock = state.controlStack[#state.controlStack]
-	assert(whileblock.type == "while")
+	local whileblock = state:getCurrentControlBlock()
+	assert(whileblock and whileblock.type == "while")
 
 	if whileblock.success then
-		-- TODO: Jump back to while()
+		-- Jump back to while()
+		local execInfo = state:getCurrentExecInfo()
+		execInfo.pc = whileblock.position
 	else
-		table.remove(state.controlStack)
+		state:popLastControlStack()
 	end
 end
 
 ---@param state Cartethyia.State
 local function stepLoop(state)
+	local forblock = state:walkControlBlock("for")
+	assert(forblock and forblock.type == "for")
+	local execInfo = state:getCurrentExecInfo()
+	local forInst = execInfo.code[forblock.position]
+
+	if forblock.subtype == "range" then
+		forblock.current = forblock.current + forblock.step
+		local done = false
+		if forblock.step > 0 then
+			done = forblock.current > forblock.step
+		else
+			done = forblock.current < forblock.step
+		end
+
+		if done then
+			-- Loop done
+			forblock.breakloop = true
+			execInfo.pc = assert(forInst.data[1])
+			return
+		end
+
+		state:setVariable(forblock.destvar, forblock.current)
+	elseif forblock.subtype == "each" then
+		forblock.current = forblock.current + 1
+		if not forblock.items[forblock.current] then
+			-- Loop done
+			forblock.breakloop = true
+			execInfo.pc = assert(forInst.data[1])
+			return
+		end
+
+		state:setVariable(forblock.destvar, forblock.items[forblock.current])
+	elseif forblock.subtype == "zip" then
+		forblock.current = forblock.current + 1
+		local items = forblock.items[forblock.current]
+		if not items then
+			-- Loop done
+			forblock.breakloop = true
+			execInfo.pc = assert(forInst.data[1])
+			return
+		end
+
+		for i, var in ipairs(forblock.destvar) do
+			if items[i] then
+				state:setVariable(var, items[i])
+			else
+				state:unsetVariable(var)
+			end
+		end
+	end
+
+	execInfo.pc = forblock.position + 1 -- Next instruction to be executed
 end
 
 ---@param state Cartethyia.State
@@ -372,6 +462,8 @@ function ControlCommands.FOREACH(state, args)
 	---@type string[]
 	local destvars = {}
 	local pushed = false
+	local execInfo, execPos = state:getCurrentExecInfo()
+	local varstore = state:getVariableStore()
 
 	while #args > 0 do
 		---@type string
@@ -417,25 +509,22 @@ function ControlCommands.FOREACH(state, args)
 				end
 
 				local destvar = destvars[1]
-				local captureInfo = {}
-				if state:hasVariable(destvar) then
-					captureInfo[destvar] = {value = state:getVariable(destvar)}
-				else
-					captureInfo[destvar] = {value = nil}
-				end
 
 				-- Note: https://cmake.org/cmake/help/v4.0/command/foreach.html
 				-- CMake specifically mentions that if start is larger than stop
 				-- (for reverse loop), the result is undocumented behavior.
+				-- that means we can do whatever we want.
 				state:insertControlBlock {
 					type = "for",
 					subtype = "range",
-					current = start,
+					execIndex = execPos,
+					position = execInfo.pc,
+					current = start - step, -- stepLoop() will increment it
 					stop = stop,
 					step = step,
 					destvar = destvar,
-					capture = captureInfo
 				}
+				varstore:beginSoftScope(destvars)
 				pushed = true
 				break
 			elseif arg == "IN" then
@@ -469,33 +558,28 @@ function ControlCommands.FOREACH(state, args)
 					return
 				end
 
-				local captureInfo = {}
-				for _, destvar in ipairs(destvars) do
-					if state:hasVariable(destvar) then
-						captureInfo[destvar] = {value = state:getVariable(destvar)}
-					else
-						captureInfo[destvar] = {value = nil}
-					end
-				end
 				if kind == "ZIP_LISTS" then
 					state:insertControlBlock {
 						type = "for",
 						subtype = "zip",
-						current = 1,
+						execIndex = execPos,
+						position = execInfo.pc,
+						current = 0, -- stepLoop() will increment it
 						items = items,
 						destvar = destvars,
-						capture = captureInfo
 					}
 				else
 					state:insertControlBlock {
 						type = "for",
 						subtype = "each",
-						current = 1,
+						execIndex = execPos,
+						position = execInfo.pc,
+						current = 0, -- stepLoop() will increment it
 						items = items,
 						destvar = destvars[1],
-						capture = captureInfo
 					}
 				end
+				varstore:beginSoftScope(destvars)
 				pushed = true
 			else
 				-- Maybe legacy foreach(out_var items...)
@@ -515,57 +599,190 @@ function ControlCommands.FOREACH(state, args)
 		-- Legacy foreach(out_var items...)
 		---@type string
 		local destvar = table.remove(destvars, 1)
-		local captureInfo = {}
-		if state:hasVariable(destvar) then
-			captureInfo[destvar] = {value = state:getVariable(destvar)}
-		else
-			captureInfo[destvar] = {value = nil}
-		end
 		state:insertControlBlock {
 			type = "for",
 			subtype = "each",
-			current = 1,
+			execIndex = execPos,
+			position = execInfo.pc,
+			current = 0, -- stepLoop() will increment it
 			items = destvars,
 			destvar = destvar,
-			capture = captureInfo
 		}
+		varstore:beginSoftScope(destvars)
 	end
 
 	return stepLoop(state)
 end
 
 ---@param state Cartethyia.State
-function ControlCommands.CONTINUE(state)
-	local control = state.controlStack[#state.controlStack]
-	if control then
-		if control.type == "while" then
-			-- TODO: Jump back to while()
-			return
-		elseif control.type == "for" then
-			-- TODO: Jump to endforeach()
-			return
+---@param targetControl string
+---@param index integer
+local function restoreControlAndExecStack(state, targetControl, index)
+	local varstore = state:getVariableStore()
+	local lastIndex = nil
+
+	while true do
+		local cb = state.controlStack[#state.controlStack]
+
+		if lastIndex == nil then
+			lastIndex = cb.execIndex
+		elseif cb.execIndex ~= lastIndex then
+			-- Pop out execution stack
+			for _ = state:getExecStackCount(), lastIndex, -1 do
+				state:popLastExecStack()
+			end
+		end
+
+		if not cb or (cb.type == targetControl and cb.execIndex == index) then
+			break
+		end
+
+		-- Some special case for certain control block
+		if cb.type == "for" then
+			-- Need to pop the variable soft scope
+			varstore:endSoftScope()
+		elseif cb.type == "block" then
+			-- Need to pop the variable scope
+			if cb.propagate then
+				varstore:endScope(cb.propagate)
+			end
+		end
+
+		state:popLastControlStack()
+	end
+end
+
+---@param state Cartethyia.State
+---@param dobreak boolean?
+local function continueOrBreak(state, dobreak)
+	local whileblock, whileblockIndex = state:walkControlBlock("while")
+	local forblock, forblockIndex = state:walkControlBlock("for")
+
+	-- Note: Both might be present, so pick one with higher control block position.
+	local targetblock = nil
+	if whileblock and forblock then
+		if whileblockIndex > forblockIndex then
+			targetblock = whileblock
+		else
+			targetblock = forblock
 		end
 	end
 
-	state:error("A CONTINUE command was found outside of a proper FOREACH or WHILE loop scope.")
+	if not targetblock then
+		return false
+	end
+
+	if targetblock.type == "while" then
+		-- Jump to endwhile so it re-evaluate the loop
+		local targetExecInfo = assert(state:getExecInfo(targetblock.execIndex))
+
+		-- Note: We can't just set the PC. This may be called through a macro which is on another exec stack.
+		restoreControlAndExecStack(state, "while", targetblock.execIndex)
+		local whileInst = targetExecInfo.code[targetblock.position]
+		targetExecInfo.pc = assert(whileInst.data[1])
+
+		if dobreak then
+			targetblock.success = false
+		end
+	elseif targetblock.type == "for" then
+		-- Jump to endfor so it re-evaluate the loop
+		-- Again, we can't just set the PC for same reason.
+		local targetExecInfo = assert(state:getExecInfo(targetblock.execIndex))
+		restoreControlAndExecStack(state, "for", targetblock.execIndex)
+		local forInst = targetExecInfo.code[targetblock.position]
+		targetExecInfo.pc = assert(forInst.data[1])
+
+		if dobreak then
+			targetblock.breakloop = true
+		end
+	else
+		error("uh oh")
+	end
+
+	return true
+end
+
+---@param state Cartethyia.State
+function ControlCommands.CONTINUE(state)
+	if not continueOrBreak(state, false) then
+		state:error("A CONTINUE command was found outside of a proper FOREACH or WHILE loop scope.")
+	end
 end
 
 ---@param state Cartethyia.State
 function ControlCommands.BREAK(state)
-	local control = state.controlStack[#state.controlStack]
-	if control then
-		if control.type == "while" then
-			control.success = false
-			-- TODO: Jump to endwhile()
-			return
-		elseif control.type == "for" then
-			control.breakloop = true
-			-- TODO: Jump to endforeach()
-			return
-		end
+	if not continueOrBreak(state, true) then
+		state:error("A BREAK command was found outside of a proper FOREACH or WHILE loop scope.")
+	end
+end
+
+---@param state Cartethyia.State
+function ControlCommands.ENDFOREACH(state)
+	local forblock = state:getCurrentControlBlock()
+	assert(forblock and forblock.type == "for")
+
+	state:getVariableStore():endSoftScope()
+	state:popLastControlStack()
+end
+
+---@param state Cartethyia.State
+---@param args string[]
+---@param macro boolean
+local function defineFunctionOrMacro(state, args, macro)
+	local execInfo = state:getCurrentExecInfo()
+	local funcinst = execInfo.code[execInfo.pc]
+
+	if #args < 1 then
+		state:error(funcinst.command.name:upper().." called with incorrect number of arguments.")
+		return
 	end
 
-	state:error("A BREAK command was found outside of a proper FOREACH or WHILE loop scope.")
+	---@type string
+	local funcname = table.remove(args)
+	local endfuncpc = assert(funcinst.data[1])
+
+	-- Copy function codes
+	---@type Cartethyia.State._Command[]
+	local code = {}
+	Util.tableMove(execInfo.code, execInfo.pc + 1, endfuncpc - 1, 1, code)
+	state.functions[funcname:upper()] = {
+		code = code,
+		filename = execInfo.filename,
+		argnames = args,
+		line = funcinst.command.line,
+		macro = macro
+	}
+
+	-- Jump straight to next instruction after endfunction()/endmacro()
+	execInfo.pc = endfuncpc + 1
+end
+
+---@param state Cartethyia.State
+---@param args string[]
+function ControlCommands.FUNCTION(state, args)
+	return defineFunctionOrMacro(state, args, false)
+end
+
+---@param state Cartethyia.State
+function ControlCommands.ENDFUNCTION(state)
+	-- Note: We only hit this if we SOMEHOW put inapproproate endfunction()
+	state:error("Flow control statements are not properly nested.")
+end
+
+---@param state Cartethyia.State
+---@param args string[]
+function ControlCommands:MACRO(state, args)
+	return defineFunctionOrMacro(state, args, true)
+end
+
+---@param state Cartethyia.State
+function ControlCommands.ENDMACRO(state)
+	-- Note: We only hit this if we SOMEHOW put inapproproate endmacro()
+	state:error("Flow control statements are not properly nested.")
+end
+
+function ControlCommands.RETURN()
+	-- TODO
 end
 
 return ControlCommands

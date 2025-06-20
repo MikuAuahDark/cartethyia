@@ -12,33 +12,40 @@ local Variables = require(PATH..".variables")
 ---@class Cartethyia.State
 local State = {}
 
+---@class Cartethyia.State._Command
+---@field public command Cartethyia.Parser.Command
+---@field public data integer[]
+
 ---@class Cartethyia.State._CMakeFunction
----@field public code Cartethyia.Parser.Command[]
+---@field public code Cartethyia.State._Command[]
 ---@field public filename string
 ---@field public line integer
 ---@field public argnames string[]
 ---@field public macro boolean
 
----@class Cartethyia.State._BlockBlock
+---@class Cartethyia.State._Block
+---@field public execIndex integer
+---@field public position integer
+
+---@class Cartethyia.State._BlockBlock: Cartethyia.State._Block
 ---@field public type "block"
 ---@field public propagate string[]|nil if this is nil, variable scope is not performed
 
----@class Cartethyia.State._IfBlock
+---@class Cartethyia.State._IfBlock: Cartethyia.State._Block
 ---@field public type "if"
 ---@field public success boolean if true and elseif/else encountered, jump straight to endif.
 
----@class Cartethyia.State._WhileBlock
+---@class Cartethyia.State._WhileBlock: Cartethyia.State._Block
 ---@field public type "while"
 ---@field public success boolean if true and elseif/else encountered, jump straight to endif.
 
----@class Cartethyia.State._FunctionBlock: Cartethyia.State._CMakeFunction
+---@class Cartethyia.State._FunctionBlock: Cartethyia.State._Block, Cartethyia.State._CMakeFunction
 ---@field public type "function"|"macro"
 
----@class Cartethyia.State._ForBlock
+---@class Cartethyia.State._ForBlock: Cartethyia.State._Block
 ---@field public type "for"
 ---@field public breakloop boolean
 ---@field public current integer
----@field public capture table<string, {value:string|nil}>
 
 ---@class Cartethyia.State._ForRangeBlock: Cartethyia.State._ForBlock
 ---@field public subtype "range"
@@ -66,11 +73,11 @@ local State = {}
 ---| Cartethyia.State._ForeachZipBlock
 
 ---@class Cartethyia.State._ExecStack
----@field public code Cartethyia.Parser.Command[]
+---@field public code Cartethyia.State._Command[]
 ---@field public pc integer
 ---@field public filename string
 ---@field public shadowVariables table<string, string> Read-only variables that's included in arg expansion **only**.
----@field public macro boolean
+---@field public macro boolean If true, don't pop variables.
 
 ---@alias Cartethyia.State._Function Cartethyia.State._LuaFunction|Cartethyia.State._CMakeFunction
 
@@ -124,27 +131,32 @@ end
 function State:execute(commands, filename)
 	filename = filename or "<UNKNOWN>"
 
-	local err, line = self:verify(commands)
-	if err then
+	local codelist, err, line = self:compile(commands)
+	if not codelist then
+		assert(err)
 		return nil, err.." at "..filename..":"..(line or 0)
 	end
 
 	self.execStack[#self.execStack+1] = {
-		code = Util.copyTable(commands, true),
+		code = codelist,
 		pc = 1,
 		filename = filename,
 		shadowVariables = {},
-		macro = false
+		macro = true
 	}
 end
 
 ---@param commands Cartethyia.Parser.Command[]
-function State:verify(commands)
-	---@type [string, integer][]
+function State:compile(commands)
+	---@type Cartethyia.State._Command[]
+	local result = {}
+
+	---@type [string, integer, integer][]
 	local stack = {}
 
-	for _, command in ipairs(commands) do
+	for pc, command in ipairs(commands) do
 		local cmd = command.name:lower()
+		local obj = {info = Util.copyTable(command, true), data = {}}
 
 		local cmdblockinfo = CONTROL_BLOCK[cmd]
 		if cmdblockinfo then
@@ -152,38 +164,79 @@ function State:verify(commands)
 				-- If it's string, it means check latest without popping.
 				local top = stack[#stack]
 				if not top then
-					return "missing '"..cmdblockinfo.."' for '"..cmd.."'", command.line
+					return nil, "missing '"..cmdblockinfo.."' for '"..cmd.."'", command.line
 				end
 
 				if top[1] ~= cmdblockinfo then
-					return "missing preceding '"..cmdblockinfo.."' for '"..cmd.."'", command.line
+					return nil, "missing preceding '"..cmdblockinfo.."' for '"..cmd.."'", command.line
+				end
+
+				-- Specialization
+				if cmdblockinfo == "if" then
+					-- elseif or else
+					local ifcmd = assert(result[top[2]])
+
+					if cmd == "elseif" or cmd == "else" then
+						-- elseif data is {endif_pc[, next elseif/else pc]}
+						-- else data is {endif_pc}
+						obj.data[1] = 0
+
+						if #ifcmd.data > 1 then
+							local lastIf = result[ifcmd.data[#ifcmd.data]]
+							lastIf.data[2] = pc
+						end
+
+						ifcmd.data[#ifcmd.data+1] = pc
+					end
 				end
 			else
 				-- If it's boolean, it means push
-				stack[#stack+1] = {cmd, command.line}
+				stack[#stack+1] = {cmd, pc, command.line}
+
+				-- Specialization
+				if cmd == "if" then
+					-- if data is {endif_pc, [elseif pc[, elseif pc[, else pc]]]}
+					obj.data[1] = 0
+				end
 			end
 		elseif cmd:sub(1, 3) == "end" and CONTROL_BLOCK[cmd:sub(4)] == true then
 			-- Pop control block
 			local top = stack[#stack]
 			local cmdname = cmd:sub(4)
 			if not top then
-				return "unexpected '"..cmd.."' no preceding '"..cmdname.."'", command.line
+				return nil, "unexpected '"..cmd.."' no preceding '"..cmdname.."'", command.line
 			end
 
 			if top[1] ~= cmdname then
-				return "unexpected '"..cmd.."' for terminating '"..top[1].."'", command.line
+				return nil, "unexpected '"..cmd.."' for terminating '"..top[1].."'", command.line
+			end
+
+			-- Mark loop
+			local prevcmd = assert(result[top[2]])
+			prevcmd.data[1] = pc
+			obj.data[1] = top[2]
+
+			-- If specialization
+			if prevcmd.command.name:lower() == "if" then
+				-- Overwrite PC info
+				for i = 2, #prevcmd.data do
+					local elseIfOrElse = assert(result[prevcmd.data[i]])
+					elseIfOrElse.data[1] = pc
+				end
 			end
 
 			stack[#stack] = nil
 		end
+
+		result[#result+1] = obj
 	end
 
 	if #stack > 0 then
 		local top = stack[#stack]
-		return "unterminated '"..top[1].."'", top[2]
+		return nil, "unterminated '"..top[1].."'", top[3]
 	end
 
-	return nil
+	return result
 end
 
 function State:step()
@@ -199,8 +252,9 @@ function State:step()
 
 		-- Get current command at current PC
 		local currentPC = currentExec.pc
-		local command = currentExec.code[currentPC]
-		if command then
+		local cmdinfo = currentExec.code[currentPC]
+		if cmdinfo then
+			local command = cmdinfo.command
 			-- Execute command
 			local func = self.functions[command.name:upper()]
 			local args, isUnquoted = self:expandArguments(command.arguments)
@@ -228,38 +282,23 @@ function State:step()
 				local argn = {}
 				Util.tableMove(args, #func.argnames, #args, 1, argn)
 				local varstore = func.macro and self.shadowVariables or self.variables
-				if func.macro then
-					-- Populate shadow variables
-					shadowvar["ARGC"] = tostring(#args)
 
-					for i, arg in ipairs(args) do
-						local argname = func.argnames[i]
-						if argname then
-							shadowvar[argname] = arg
-						end
+				-- Push variable stack.
+				varstore:beginScope()
 
-						shadowvar["ARG"..(i - 1)] = arg
+				-- Populate true variables
+				varstore:set("ARGC", tostring(#args))
+
+				for i, arg in ipairs(args) do
+					local argname = func.argnames[i]
+					if argname then
+						varstore:set(argname, arg)
 					end
 
-					shadowvar["ARGN"] = table.concat(argn, ";")
-				else
-					-- Push variable stack.
-					self.variables:beginScope()
-
-					-- Populate true variables
-					self.variables:set("ARGC", tostring(#args))
-
-					for i, arg in ipairs(args) do
-						local argname = func.argnames[i]
-						if argname then
-							self.variables:set(argname, arg)
-						end
-
-						self.variables:set("ARG"..(i - 1), arg)
-					end
-
-					self.variables:set("ARGN", table.concat(argn, ";"))
+					varstore:set("ARG"..(i - 1), arg)
 				end
+
+				varstore:set("ARGN", table.concat(argn, ";"))
 
 				-- Create new function call stack
 				self.execStack[#self.execStack+1] = {
@@ -273,6 +312,9 @@ function State:step()
 
 			-- Break out of while loop
 			break
+		else
+			assert(currentPC > #currentExec.code)
+			self:popLastExecStack()
 		end
 	end
 end
@@ -301,7 +343,7 @@ function State:traceback()
 		local code = execInfo.code[execInfo.pc]
 
 		if code then
-			result[#result+1] = {execInfo.filename, code.line}
+			result[#result+1] = {execInfo.filename, code.command.line}
 		end
 	end
 
@@ -457,13 +499,54 @@ function State:insertControlBlock(cblock)
 	self.controlStack[#self.controlStack+1] = cblock
 end
 
+function State:removeCurrentControlBlock()
+	table.remove(self.controlStack)
+end
+
 ---@return Cartethyia.State._ControlBlock|nil
 function State:getCurrentControlBlock()
 	return self.controlStack[#self.controlStack]
 end
 
+---@param blocktype string
+function State:walkControlBlock(blocktype)
+	for i = #self.controlStack, 1, -1 do
+		local cb = self.controlStack[i]
+		if cb.type == blocktype then
+			return cb, i
+		end
+	end
+
+	return nil, nil
+end
+
 function State:getCurrentExecInfo()
-	return (assert(self.execStack[#self.execStack], "execution stack is empty"))
+	return (assert(self.execStack[#self.execStack], "execution stack is empty")), #self.execStack
+end
+
+---@param index integer
+---@return Cartethyia.State._ExecStack|nil
+function State:getExecInfo(index)
+	return self.execStack[index]
+end
+
+function State:getExecStackCount()
+	return #self.execStack
+end
+
+function State:popLastExecStack()
+	local currentExec = self.execStack[#self.execStack]
+	local varstore = currentExec.macro and self.shadowVariables or self.variables
+	varstore:endScope()
+	table.remove(self.execStack)
+end
+
+function State:popLastControlStack()
+	table.remove(self.controlStack)
+end
+
+function State:getVariableStore()
+	return self.variables
 end
 
 return State

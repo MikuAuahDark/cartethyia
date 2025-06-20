@@ -8,11 +8,17 @@ local Variables = {}
 ---@package
 Variables.__index = Variables
 
----@param vars? table<string, string>[]
+---@alias Cartethyia.Variables.VariableStore table<string, {value:string|nil}>
+
+---@class Cartethyia.Variables.Store
+---@field public softCaptures Cartethyia.Variables.VariableStore[] If this is set, variables in this list is restored after exiting the scope.
+---@field public variables Cartethyia.Variables.VariableStore List of variables.
+
+---@param vars? Cartethyia.Variables.Store[]
 ---@package
 function Variables:new(vars)
 	---@private
-	self.stack = {} ---@type table<string, string>[]
+	self.stack = {} ---@type Cartethyia.Variables.Store[]
 
 	if vars then
 		self.stack = Util.copyTable(vars)
@@ -20,12 +26,49 @@ function Variables:new(vars)
 end
 
 function Variables:beginScope()
-	self.stack[#self.stack+1] = {}
+	self.stack[#self.stack+1] = {softCaptures = {}, variables = {}}
 end
 
-function Variables:endScope()
+---@param captureVars string[]
+function Variables:beginSoftScope(captureVars)
+	local softCaptures = {}
+	for _, v in ipairs(captureVars) do
+		if self:has(v, 0, true) then
+			softCaptures[v] = {value = self:get(v)}
+		else
+			softCaptures[v] = {}
+		end
+	end
+
+	local currentStack = self.stack[#self.stack]
+	currentStack.softCaptures[#currentStack.softCaptures+1] = softCaptures
+end
+
+---@param propagate string[]?
+function Variables:endScope(propagate)
 	assert(#self.stack > 1, "no parent scope")
-	table.remove(self.stack)
+
+	---@type Cartethyia.Variables.Store
+	local lastTop = table.remove(self.stack)
+
+	if propagate then
+		for _, k in ipairs(propagate) do
+			local value = lastTop[k]
+			if value then
+				if value.value ~= nil then
+					self:set(k, value.value)
+				else
+					self:unset(k)
+				end
+			end
+		end
+	end
+end
+
+function Variables:endSoftScope()
+	---@type Cartethyia.Variables.Store
+	local currentStack = self.stack[#self.stack]
+	assert(table.remove(currentStack.softCaptures), "no soft scope for current variable scope")
 end
 
 ---@param name string
@@ -33,8 +76,8 @@ end
 function Variables:get(name, scopenum)
 	scopenum = scopenum or #self.stack
 	local stack = self.stack[scopenum]
-	if stack then
-		return stack[name] or ""
+	if stack and stack[name] then
+		return stack[name].value or ""
 	end
 
 	return ""
@@ -51,8 +94,8 @@ function Variables:has(name, scopenum, exactscopenum)
 
 	if exactscopenum then
 		local stack = self.stack[scopenum]
-		if stack then
-			return not not stack[name]
+		if stack and stack[name] then
+			return stack[name].value ~= nil
 		end
 
 		return false
@@ -60,7 +103,7 @@ function Variables:has(name, scopenum, exactscopenum)
 		for i = scopenum, 1, -1 do
 			local stack = self.stack[i]
 			if stack[name] then
-				return true
+				return stack[name].value ~= nil
 			end
 		end
 
@@ -77,7 +120,7 @@ function Variables:set(name, value, scopenum)
 		scopenum = #self.stack + scopenum
 	end
 
-	self.stack[scopenum][name] = tostring(value)
+	self.stack[scopenum][name] = {value = tostring(value)}
 end
 
 function Variables:unset(name, scopenum)
@@ -88,28 +131,20 @@ function Variables:unset(name, scopenum)
 
 	local stack = self.stack[scopenum]
 	if stack[name] then
-		stack[name] = nil
+		if scopenum == 1 then
+			stack[name] = nil
+		else
+			stack[name].value = nil
+		end
 		return true
 	end
 
 	return false
 end
 
----@return table<string, string>[]
+---@return table<string, {value:string|nil}>[]
 function Variables:serialize()
-	local result = {}
-
-	for _, stack in ipairs(self.stack) do
-		local s = {}
-
-		for k, v in pairs(stack) do
-			s[k] = v
-		end
-
-		result[#result + 1] = s
-	end
-
-	return result
+	return Util.copyTable(self.stack, true)
 end
 
 function Variables:getStackCount()
@@ -124,7 +159,7 @@ setmetatable(Variables, {
 	end
 })
 
----@alias Cartethyia.Variables.new fun(vars?:table<string, string>[]):Cartethyia.Variables
+---@alias Cartethyia.Variables.new fun(vars?:table<string, {value:string|nil}>[]):Cartethyia.Variables
 ---@alias Cartethyia.Variables.M Cartethyia.Variables | Cartethyia.Variables.new
 ---@cast Variables +Cartethyia.Variables.new
 return Variables
