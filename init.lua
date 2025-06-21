@@ -27,4 +27,8 @@ function Cartethyia.newInterpreter()
 	return state
 end
 
+---@type Cartethyia.Parser.M
+local parser = require(PATH..".parser")
+Cartethyia.parse = parser.parse
+
 return Cartethyia

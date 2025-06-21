@@ -22,6 +22,8 @@ function Variables:new(vars)
 
 	if vars then
 		self.stack = Util.copyTable(vars)
+	else
+		self:beginScope()
 	end
 end
 

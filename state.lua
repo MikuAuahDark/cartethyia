@@ -143,6 +143,8 @@ function State:execute(commands, filename)
 		filename = filename,
 		macro = true
 	}
+	self.shadowVariables:beginScope()
+	return true
 end
 
 ---@param commands Cartethyia.Parser.Command[]
@@ -155,7 +157,8 @@ function State:compile(commands)
 
 	for pc, command in ipairs(commands) do
 		local cmd = command.name:lower()
-		local obj = {info = Util.copyTable(command, true), data = {}}
+		---@type Cartethyia.State._Command
+		local obj = {command = Util.copyTable(command, true), data = {}}
 
 		local cmdblockinfo = CONTROL_BLOCK[cmd]
 		if cmdblockinfo then
@@ -258,7 +261,9 @@ function State:step()
 			local func = self.functions[command.name:upper()]
 			local args, isUnquoted = self:expandArguments(command.arguments)
 
-			if type(func) == "function" then
+			if not func then
+				return nil, "Unknown command \""..command.name.."\""
+			elseif type(func) == "function" then
 				-- Lua function
 				func(self, args, isUnquoted)
 
@@ -314,13 +319,15 @@ function State:step()
 			self:popLastExecStack()
 		end
 	end
+
+	return true
 end
 
 function State:run()
 	while true do
 		local res, err = self:step()
 
-		if res == nil then
+		if err then
 			return nil, err
 		elseif res == false then
 			break
@@ -461,6 +468,10 @@ function State:unsetVariable(name, parentScope)
 	return self.variables:unset(name, parentScope and -1 or 0)
 end
 
+function State:hasParentScope()
+	return self.variables:getStackCount() > 1
+end
+
 ---@param funcs table<string, Cartethyia.State._LuaFunction>
 function State:registerLuaFunctions(funcs)
 	for k, v in pairs(funcs) do
@@ -469,6 +480,12 @@ function State:registerLuaFunctions(funcs)
 			self.functions[kupper] = v
 		end
 	end
+end
+
+---@param name string
+---@param expansion Cartethyia.Interpolator.Expansion?
+function State:registerInterpolatorExpansion(name, expansion)
+	self.interpolator:setExpansion(name, expansion)
 end
 
 -- Internal functions --

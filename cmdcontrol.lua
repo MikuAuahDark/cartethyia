@@ -134,11 +134,13 @@ local function _evaluateOne(state, args)
 		arg == "IS_ABSOLUTE"
 	then
 		-- TODO: Support these?
-		state:warning("Cartethyia does not support filesystem-related if("..arg..") and will be evaluated to false")
+		state:warning("Cartethyia does not support filesystem-related IF("..arg..") and will be evaluated to FALSE")
 		table.remove(args, 1)
 		table.remove(args, 1)
 		evaluated = false
 	else
+		table.remove(args, 1)
+
 		-- See if it's one of those binary comparison
 		local binaryfunc = args[2]
 		local matchBinaryFunc = true

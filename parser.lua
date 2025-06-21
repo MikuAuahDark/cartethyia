@@ -1,4 +1,4 @@
----@class Cartethyia.Parser
+---@class Cartethyia.Parser.M
 local parser = {}
 
 --[[

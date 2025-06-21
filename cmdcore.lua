@@ -45,4 +45,28 @@ function CoreCommands.MESSAGE(state, args)
 	end
 end
 
+---@param state Cartethyia.State
+---@param args string[]
+function CoreCommands.SET(state, args)
+	if #args < 1 then
+		state:error("SET called with incorrect number of arguments")
+	end
+
+	---@type string
+	local varname = table.remove(args, 1)
+	local parent = false
+
+	if args[#args] == "PARENT_SCOPE" then
+		if state:hasParentScope() then
+			table.remove(args)
+			parent = true
+		else
+			state:warningDev("Cannot set \""..varname.."\": current scope has no parent.")
+			return
+		end
+	end
+
+	state:setVariable(varname, table.concat(args, ";"), parent)
+end
+
 return CoreCommands
