@@ -68,7 +68,7 @@ function ControlCommands.ENDBLOCK(state)
 		varstore:endScope(block.propagate)
 	end
 
-	state:popLastControlStack()
+	state:popLastControlBlock()
 end
 
 local _evaluateIf
@@ -350,7 +350,7 @@ function ControlCommands.ENDIF(state)
 	local ifcontrol = state.controlStack[#state.controlStack]
 	assert(ifcontrol.type == "if")
 
-	state:popLastControlStack()
+	state:popLastControlBlock()
 end
 
 ---@param state Cartethyia.State
@@ -396,7 +396,7 @@ function ControlCommands.ENDWHILE(state)
 		local execInfo = state:getCurrentExecInfo()
 		execInfo.pc = whileblock.position
 	else
-		state:popLastControlStack()
+		state:popLastControlBlock()
 	end
 end
 
@@ -648,7 +648,7 @@ local function restoreControlAndExecStack(state, targetControl, index)
 			end
 		end
 
-		state:popLastControlStack()
+		state:popLastControlBlock()
 	end
 end
 
@@ -722,7 +722,7 @@ function ControlCommands.ENDFOREACH(state)
 	assert(forblock and forblock.type == "for")
 
 	state:getVariableStore():endSoftScope()
-	state:popLastControlStack()
+	state:popLastControlBlock()
 end
 
 ---@param state Cartethyia.State
@@ -781,8 +781,50 @@ function ControlCommands.ENDMACRO(state)
 	state:error("Flow control statements are not properly nested.")
 end
 
-function ControlCommands.RETURN()
-	-- TODO
+---@param state Cartethyia.State
+function ControlCommands.RETURN(state)
+	while true do
+		local execInfo, execPos = state:getCurrentExecInfo()
+		local varstore = state:getVariableStore()
+		local shadowVarstore = state:getShadowVariableStore()
+
+		-- Pop as many control block as possible
+		while true do
+			local controlBlock = state:getCurrentControlBlock()
+			if not controlBlock then
+				break
+			end
+
+			if controlBlock.execIndex >= execPos then
+				-- Handle special case
+				if controlBlock.type == "block" then
+					-- Pop variable scope?
+					if controlBlock.propagate then
+						varstore:endScope(controlBlock.propagate)
+					end
+				elseif controlBlock.type == "for" then
+					-- Pop soft captures
+					varstore:endSoftScope()
+				end
+
+				state:popLastControlBlock()
+			else
+				break
+			end
+		end
+
+		-- If it's macro, pop shadow variable store.
+		-- If it's function, pop variable store then break.
+		-- In either case, pop the last exec stack too.
+		if execInfo.macro then
+			shadowVarstore:endScope()
+			state:popLastExecStack()
+		else
+			varstore:endScope()
+			state:popLastExecStack()
+			break
+		end
+	end
 end
 
 return ControlCommands

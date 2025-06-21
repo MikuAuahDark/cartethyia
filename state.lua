@@ -11,6 +11,8 @@ local Variables = require(PATH..".variables")
 
 ---@class Cartethyia.State
 local State = {}
+---@private
+State.__index = State
 
 ---@class Cartethyia.State._Command
 ---@field public command Cartethyia.Parser.Command
@@ -76,7 +78,6 @@ local State = {}
 ---@field public code Cartethyia.State._Command[]
 ---@field public pc integer
 ---@field public filename string
----@field public shadowVariables table<string, string> Read-only variables that's included in arg expansion **only**.
 ---@field public macro boolean If true, don't pop variables.
 
 ---@alias Cartethyia.State._Function Cartethyia.State._LuaFunction|Cartethyia.State._CMakeFunction
@@ -123,7 +124,6 @@ function State:new()
 	self:setPrintToStdout(print)
 	self:setPrintToStderr(printStderr)
 	self.variables:set("CARTETHYIA", "1", 1)
-	-- TODO: Finalize setup
 end
 
 ---@param commands Cartethyia.Parser.Command[]
@@ -141,7 +141,6 @@ function State:execute(commands, filename)
 		code = codelist,
 		pc = 1,
 		filename = filename,
-		shadowVariables = {},
 		macro = true
 	}
 end
@@ -278,7 +277,6 @@ function State:step()
 					return nil, self.currentError
 				end
 
-				local shadowvar = {}
 				local argn = {}
 				Util.tableMove(args, #func.argnames, #args, 1, argn)
 				local varstore = func.macro and self.shadowVariables or self.variables
@@ -305,7 +303,6 @@ function State:step()
 					code = func.code,
 					pc = 1,
 					filename = func.filename,
-					shadowVariables = shadowvar,
 					macro = func.macro
 				}
 			end
@@ -464,6 +461,16 @@ function State:unsetVariable(name, parentScope)
 	return self.variables:unset(name, parentScope and -1 or 0)
 end
 
+---@param funcs table<string, Cartethyia.State._LuaFunction>
+function State:registerLuaFunctions(funcs)
+	for k, v in pairs(funcs) do
+		local kupper = k:upper()
+		if type(v) == "function" and type(self.functions[kupper]) ~= "table" then
+			self.functions[kupper] = v
+		end
+	end
+end
+
 -- Internal functions --
 
 ---@param uargs Cartethyia.Parser.Argument[]
@@ -541,7 +548,7 @@ function State:popLastExecStack()
 	table.remove(self.execStack)
 end
 
-function State:popLastControlStack()
+function State:popLastControlBlock()
 	table.remove(self.controlStack)
 end
 
@@ -549,4 +556,19 @@ function State:getVariableStore()
 	return self.variables
 end
 
+function State:getShadowVariableStore()
+	return self.shadowVariables
+end
+
+setmetatable(State, {
+	__call = function (_)
+		local obj = setmetatable({}, State)
+		obj:new()
+		return obj
+	end
+})
+
+---@alias Cartethyia.State.new fun():Cartethyia.State
+---@alias Cartethyia.State.M Cartethyia.State | Cartethyia.State.new
+---@cast State +Cartethyia.State.new
 return State
