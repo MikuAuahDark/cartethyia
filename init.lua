@@ -10,15 +10,13 @@ local Cartethyia = {}
 
 ---@type Cartethyia.State.M
 Cartethyia.State = require(PATH..".state")
----@type Cartethyia.CMDControl.M
-Cartethyia.ControlCommands = require(PATH..".cmdcontrol")
----@type Cartethyia.CMDCore.M
-Cartethyia.CoreCommands = require(PATH..".cmdcore")
+---@type Cartethyia.Commands.M
+Cartethyia.Commands = require(PATH..".command")
 
 function Cartethyia.newInterpreter()
 	local state = Cartethyia.State()
-	state:registerLuaFunctions(Cartethyia.ControlCommands)
-	state:registerLuaFunctions(Cartethyia.CoreCommands)
+	state:registerLuaFunctions(Cartethyia.Commands.Control)
+	state:registerLuaFunctions(Cartethyia.Commands.Core)
 
 	if package.path:find("\\", 1, true) then
 		state:setVariable("WIN32", "1")

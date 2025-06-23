@@ -1,5 +1,6 @@
----@alias Cartethyia.CMDCore.M table<string, Cartethyia.State._LuaFunction>
----@type Cartethyia.CMDCore.M
+local PATH = string.sub(..., 1, string.len(...) - #(".command.core"))
+
+---@class Cartethyia.Command.Core.M
 local CoreCommands = {}
 
 ---Only exists for backward compatibility with CMake
@@ -67,6 +68,46 @@ function CoreCommands.SET(state, args)
 	end
 
 	state:setVariable(varname, table.concat(args, ";"), parent)
+end
+
+---@type Cartethyia.Command.String.SubCommand
+local StringSubCommands = require(PATH..".command.string")
+
+---@param state Cartethyia.State
+---@param args string[]
+---@param isUnquoted boolean[]
+function CoreCommands.STRING(state, args, isUnquoted)
+	local currentsub = StringSubCommands
+	local subcmd
+	local lastsubcmd
+
+	while true do
+		---@type string?
+		subcmd = table.remove(args, 1)
+		table.remove(isUnquoted, 1)
+
+		if not subcmd then
+			if lastsubcmd then
+				state:error("STRING sub-command"..lastsubcmd.." requires a mode to be specified.")
+			else
+				state:error("STRING must be called with at least one argument.")
+			end
+
+			return
+		end
+
+		lastsubcmd = (lastsubcmd or "").." "..subcmd
+
+		local target = currentsub[subcmd]
+		if not target then
+			state:error("STRING does not recognize sub-command"..lastsubcmd)
+			return
+		elseif type(target) == "table" then
+			currentsub = target
+		else
+			return target(state, args, isUnquoted)
+		end
+	end
 end
 
 return CoreCommands

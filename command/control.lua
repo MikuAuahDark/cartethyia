@@ -1,10 +1,9 @@
-local PATH = string.sub(..., 1, string.len(...) - #(".cmdcontrol"))
+local PATH = string.sub(..., 1, string.len(...) - #(".command.control"))
 
 ---@type Cartethyia.Util.M
 local Util = require(PATH..".util")
 
----@alias Cartethyia.CMDControl.M table<string, Cartethyia.State._LuaFunction>
----@type Cartethyia.CMDControl.M
+---@class Cartethyia.Command.Control.M
 local ControlCommands = {}
 
 ---This defines the CMake `block()` command.
