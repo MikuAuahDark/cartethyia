@@ -177,7 +177,16 @@ function StringSubCommands.SUBSTRING(state, args)
 	state:setVariable(args[4], input:sub(1 + begin, begin + length))
 end
 
--- TODO: STRIP sub-command
+---@param state Cartethyia.State
+---@param args string[]
+function StringSubCommands.STRIP(state, args)
+	if #args < 2 then
+		state:error("STRING sub-command STRIP requires 2 arguments.")
+		return
+	end
+
+	state:setVariable(args[2], args[1]:match("^%s*(.-)%s*$"))
+end
 
 ---@param state Cartethyia.State
 ---@param args string[]
@@ -189,7 +198,6 @@ function StringSubCommands.REPEAT(state, args)
 
 	local input = args[1]
 	local count = math.max(tonumber(args[2]) or 0, 0)
-	local output = args[3]
 	local sep = ""
 
 	-- Cartethyia extension
@@ -218,5 +226,67 @@ StringSubCommands.SHA3_224 = defineHashStub("SHA3_224")
 StringSubCommands.SHA3_256 = defineHashStub("SHA3_256")
 StringSubCommands.SHA3_384 = defineHashStub("SHA3_384")
 StringSubCommands.SHA3_512 = defineHashStub("SHA3_512")
+
+---@param state Cartethyia.State
+---@param args string[]
+function StringSubCommands.ASCII(state, args)
+	--"Character with code 256 does not exist."
+
+	if #args < 2 then
+		state:error("STRING sub-command ASCII requires at least 2 arguments.")
+		return
+	end
+
+	---@type string
+	local output = table.remove(args)
+	local str = {}
+
+	for _, v in ipairs(args) do
+		local n = tonumber(v)
+		if not n or (n < 0 or n > 255) then
+			state:error("String character with code "..v.." does not exist.")
+			return
+		end
+
+		str[#str+1] = string.char(n)
+	end
+
+	state:setVariable(output, table.concat(str))
+end
+
+---@param char string
+local function hexify(char)
+	return string.format("%02x", char:byte())
+end
+
+---@param state Cartethyia.State
+---@param args string[]
+function StringSubCommands.HEX(state, args)
+	if #args < 2 then
+		state:error("STRING sub-command HEX requires 2 arguments.")
+		return
+	end
+
+	state:setVariable(args[2], (args[1]:gsub(".", hexify)))
+end
+
+
+---@param state Cartethyia.State
+---@param args string[]
+function StringSubCommands.MAKE_C_IDENTIFIER(state, args)
+	if #args < 2 then
+		state:error("STRING sub-command MAKE_C_IDENTIFIER requires 2 arguments.")
+		return
+	end
+
+	local result = args[1]:gsub("[^%w_]", "_")
+	if result:match("^%d") then
+		result = "_"..result
+	end
+
+	state:setVariable(args[2], result)
+end
+
+-- TODO: Rest of the string() sub-commands
 
 return StringSubCommands
