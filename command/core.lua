@@ -103,6 +103,46 @@ function CoreCommands.CMAKE_PARSE_ARGUMENTS(state, args)
 	end
 end
 
+---@type Cartethyia.Command.List.SubCommand
+local ListSubCommands = require(PATH..".command.list")
+
+---@param state Cartethyia.State
+---@param args string[]
+---@param isUnquoted boolean[]
+function CoreCommands.LIST(state, args, isUnquoted)
+	local currentsub = ListSubCommands
+	local subcmd
+	local lastsubcmd
+
+	while true do
+		---@type string?
+		subcmd = table.remove(args, 1)
+		table.remove(isUnquoted, 1)
+
+		if not subcmd then
+			if lastsubcmd then
+				state:error("LIST sub-command"..lastsubcmd.." requires a mode to be specified.")
+			else
+				state:error("LIST must be called with at least one argument.")
+			end
+
+			return
+		end
+
+		lastsubcmd = (lastsubcmd or "").." "..subcmd
+
+		local target = currentsub[subcmd]
+		if not target then
+			state:error("LIST does not recognize sub-command"..lastsubcmd)
+			return
+		elseif type(target) == "table" then
+			currentsub = target
+		else
+			return target(state, args, isUnquoted)
+		end
+	end
+end
+
 ---This defines the CMake `message()` command.
 ---@param state Cartethyia.State
 ---@param args string[]
