@@ -76,7 +76,6 @@ function Util.pathEqual(path1, path2)
 end
 
 ---@param str string
----@param delim string?
 function Util.makeList(str)
 	---@type string[]
 	local result = {}
@@ -100,6 +99,16 @@ function Util.makeList(str)
 	end
 
 	return result
+end
+
+---@param strs string[]
+function Util.toList(strs)
+	local r = {}
+	for _, v in ipairs(strs) do
+		r[#r+1] = v:gsub(";", "\\;")
+	end
+
+	return table.concat(r)
 end
 
 ---@param str string
@@ -213,5 +222,101 @@ if not tableMove then
 	end
 end
 Util.tableMove = tableMove
+
+---@generic T
+---@param list T[]
+---@return table<T, boolean>
+function Util.makeKeyLookup(list)
+	local result = {}
+
+	for _, v in ipairs(list) do
+		result[v] = true
+	end
+
+	return result
+end
+
+---This is used to implement `cmake_parse_arguments()`
+---@param args string[]
+---@param options string[]
+---@param oneValueArgument string[]
+---@param multiValueArgument string[]
+function Util.parseArguments(args, options, oneValueArgument, multiValueArgument)
+	local result = {
+		---@type table<string, boolean?>
+		options = {},
+		---@type table<string, string?>
+		oneValueArgument = {},
+		---@type table<string, string[]?>
+		multiValueArgument = {},
+		---@type string[]
+		unparsed = {},
+		---@type string[]
+		missing = {},
+		indices = {
+			---@type table<string, integer?>
+			oneValueKeyword = {},
+			---@type table<string, integer[]?>
+			multiValueKeyword = {},
+			---@type integer[]
+			unparsed = {},
+		},
+	}
+
+	local binaryLookup = Util.makeKeyLookup(options)
+	local oneLookup = Util.makeKeyLookup(oneValueArgument)
+	local multiLookup = Util.makeKeyLookup(multiValueArgument)
+	local targetOption = nil
+	local multi = false
+
+	local checked = {}
+	for k in pairs(oneLookup) do
+		checked[k] = false
+	end
+	for k in pairs(multiLookup) do
+		checked[k] = false
+	end
+
+	for i, arg in ipairs(args) do
+		if multiLookup[arg] then
+			checked[arg] = true
+			targetOption = arg
+			multi = true
+			if not result.multiValueArgument[targetOption] then
+				result.multiValueArgument[targetOption] = {}
+			end
+			if not result.indices.multiValueKeyword[targetOption] then
+				result.indices.multiValueKeyword[targetOption] = {}
+			end
+		elseif oneLookup[arg] then
+			checked[arg] = true
+			targetOption = arg
+			multi = false
+			result.oneValueArgument[targetOption] = ""
+		elseif binaryLookup[arg] then
+			result.options[arg] = true
+		elseif targetOption then
+			if multi then
+				table.insert(result.multiValueArgument[targetOption], arg)
+				table.insert(result.indices.multiValueKeyword[targetOption], i)
+			else
+				result.oneValueArgument[targetOption] = arg
+				result.indices.oneValueKeyword[targetOption] = i
+				targetOption = nil
+			end
+		else
+			table.insert(result.unparsed, arg)
+			table.insert(result.indices.unparsed, i)
+		end
+	end
+
+	for k, v in pairs(checked) do
+		if not v then
+			table.insert(result.missing, k)
+		end
+	end
+
+	return result
+end
 
 return Util
