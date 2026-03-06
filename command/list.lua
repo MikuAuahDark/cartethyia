@@ -167,6 +167,10 @@ end
 
 -- TODO: list(INSESRT|POP_BACK|POP_FRONT)
 
+function ListSubCommands.INSERT()
+	
+end
+
 ---@param state Cartethyia.State
 ---@param args string[]
 function ListSubCommands.PREPEND(state, args)
@@ -180,6 +184,25 @@ function ListSubCommands.PREPEND(state, args)
 	local result = {}
 	Util.tableMove(args, 2, #args, 1, result)
 	Util.tableMove(args, 1, #list, #result, result)
+	state:setVariable(input, Util.toList(result))
+end
+
+---@param state Cartethyia.State
+---@param args string[]
+function ListSubCommands.REVERSE(state, args)
+	if #args < 1 then
+		state:error("LIST sub-command REVERSE requires an argument argument.")
+		return
+	end
+
+	local input = args[1]
+	local list = Util.makeList(state:getVariable(input))
+	local result = {}
+
+	for i = #list, 1, -1 do
+		result[#result+1] = list[i]
+	end
+
 	state:setVariable(input, Util.toList(result))
 end
 

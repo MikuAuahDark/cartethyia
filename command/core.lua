@@ -143,6 +143,11 @@ function CoreCommands.LIST(state, args, isUnquoted)
 	end
 end
 
+---@type Cartethyia.Command.Math
+local Math = require(PATH..".command.math")
+
+CoreCommands.MATH = Math.MATH
+
 ---This defines the CMake `message()` command.
 ---@param state Cartethyia.State
 ---@param args string[]
