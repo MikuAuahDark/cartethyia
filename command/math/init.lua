@@ -134,7 +134,7 @@ function Math.MATH(state, args)
 		end
 
 		state:setVariable(args[2], result)
-	elseif args[2] == "FEXPR" then
+	elseif args[1] == "FEXPR" then
 		local format = "%.14g"
 		if args[4] == "OUTPUT_PRECISION" then
 			if args[5] == "FULL" then
@@ -151,9 +151,9 @@ function Math.MATH(state, args)
 			return
 		end
 
-		state:setVariable(args[2], result)
+		state:setVariable(args[2], string.format(format, result))
 	else
-		state:error("MATH does not recognize sub-command "..string(args[1]))
+		state:error("MATH does not recognize sub-command "..tostring(args[1]))
 	end
 end
 
