@@ -135,6 +135,16 @@ function Math.MATH(state, args)
 
 		state:setVariable(args[2], result)
 	elseif args[2] == "FEXPR" then
+		local format = "%.14g"
+		if args[4] == "OUTPUT_PRECISION" then
+			if args[5] == "FULL" then
+				format = "%.17f"
+			elseif args[5] ~= "DEFAULT" then
+				state:error("math(FEXPR) called with incorrect number of arguments")
+				return
+			end
+		end
+
 		local result, msg = parser.parse(args[3])
 		if not result then
 			state:error(msg or "Unknown error parsing expression")
