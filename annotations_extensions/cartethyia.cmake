@@ -1,7 +1,7 @@
 # Cartethyia-specific annotation extensions meant to be loaded with Fleurdelys.
 
 ## This variable is set to 1 if the CMake script is running under Cartethyia.
-## set(CARTETHYIA 1)
+## set(CARTETHYIA)
 
 ## Repeat a string a specified number of times, with separator.
 ##
