@@ -7,7 +7,7 @@ behavior differences, and limitations.
 Extensions
 -----
 
-### `CARTETHIYA` Variable
+### `CARTETHYIA` Variable
 
 This variable is set to 1 if the CMake script is running under Cartethyia.
 
@@ -29,7 +29,7 @@ The original CMake requires `math(EXPR)` to be evaluated in 64-bit signed intege
 natively support 64-bit integer arithmetic. `math(FEXPR)` simply performs all evaluations in double-precision floating
 point instead.
 
-The `OUTPUT_PRECISION` controls the format specifier for the resulting nuber before storing into `var`:
+The `OUTPUT_PRECISION` controls the format specifier for the resulting number before storing into `var`:
 * `DEFAULT` uses `%.14g` `string.format` specifier. This is the default is no `OUTPUT_PRECISION` is specified.
 * `FULL` uses `%.17f` `string.format` specifier.
 
